@@ -72,6 +72,7 @@ MAINGROUP_MAP = {
     "수선비": "수선비", "장비구입": "비품", "출금": "현금"
 }
 
+# 회계 기준 분류
 SALES_ACCOUNTS = ["국고보조금", "용역매출"]
 COST_ACCOUNTS = [
     "급여", "잡급", "퇴직연금", "퇴직연금운용관리", "건강보험", "고용보험", "국민연금", "산재보험", "교육훈련비",
@@ -79,8 +80,9 @@ COST_ACCOUNTS = [
     "소모품비", "사무용품비", "수선비", "지급수수료", "복리후생비", "통신비", "도서인쇄비",
     "업무추진비", "운반비", "비품"
 ]
-OTHER_ACCOUNTS = ["기타영업외수익", "이자수익", "임대료", "이자비용", "단기차입금", "장기차입금", "임차보증금", "가수금", "가지급금", "미지급금 정산", "현금"]
-TAX_ACCOUNTS = ["세금과공과", "법인세비용", "예수금", "퇴직소득세"]
+OTHER_ACCOUNTS = ["기타영업외수익", "이자수익", "임대료", "이자비용"]  # Pure P&L 항목만
+TAX_ACCOUNTS = ["세금과공과", "법인세비용"]                      # Pure Expense 항목만
+BS_ACCOUNTS = ["단기차입금", "장기차입금", "가수금", "가지급금", "예수금", "퇴직소득세", "임차보증금", "미지급금 정산", "현금"] # 자산/부채 항목
 
 def classify_account(row):
     sub = str(row['subgroup']).strip() if pd.notnull(row['subgroup']) else ""
@@ -117,11 +119,10 @@ def style_table(df):
         return styles
     return df.style.format("{:,.0f}").apply(apply_cell_style, axis=1)
 
-# 세부 내역 및 월별 필터/합계 표시 함수
 def display_detail_table(df_raw, account_name, key_suffix):
     base_df = df_raw[df_raw['account'] == account_name].copy()
     
-    col1, col2 = st.columns([1, 3])
+    col1, _ = st.columns([1, 3])
     with col1:
         month_options = ["전체"] + [f"{i}월" for i in range(1, 13)]
         selected_month = st.selectbox(
@@ -137,12 +138,10 @@ def display_detail_table(df_raw, account_name, key_suffix):
         
     display_df = display_df.sort_values(by='day', ascending=False)
     
-    # 합계 행 계산
     dep_sum = display_df['deposit'].fillna(0).sum()
     with_sum = display_df['withdrawal'].fillna(0).sum()
     amt_sum = display_df['amount'].fillna(0).sum()
     
-    # 출력용 데이터프레임 구성
     view_df = display_df[['day', 'maingroup', 'subgroup', 'where', 'abstract01', 'deposit', 'withdrawal', 'amount']].copy()
     
     sum_row = pd.DataFrame([{
@@ -160,7 +159,6 @@ def display_detail_table(df_raw, account_name, key_suffix):
     
     st.info(f"👉 **[{account_name}]** ({selected_month}) 세부 거래내역 - 총 **{len(view_df)}건**")
     
-    # 합계 행 강조 스타일
     def style_detail(df):
         def apply_row_style(row):
             is_total = str(row['day']) == '📌 합계'
@@ -228,7 +226,7 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
             display_detail_table(df_raw, selected_account, "cost")
     st.markdown("---")
 
-    # 3. 영업이익 종합
+    # 3. 영업이익 종합 요약
     st.markdown("#### 🏆 3. 영업이익 종합 (총매출액 - 총영업비용)")
     sales_sum = raw_pivot.reindex(SALES_ACCOUNTS).fillna(0).sum()
     cost_sum = raw_pivot.reindex(COST_ACCOUNTS).fillna(0).sum()
@@ -242,8 +240,8 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
     st.dataframe(style_table(summary_df), use_container_width=True)
     st.markdown("---")
 
-    # 4. 영업외손익
-    st.markdown("#### 4. 영업외손익 및 기타")
+    # 4. 영업외손익 (손익 항목만)
+    st.markdown("#### 4. 영업외손익 (임대료, 이자 등)")
     other_df = make_section_df(raw_pivot, OTHER_ACCOUNTS, "소계(영업외손익)")
     event_other = st.dataframe(style_table(other_df), use_container_width=True, on_select="rerun", selection_mode="single-row", key="other_tbl")
     if event_other and event_other.get("selection", {}).get("rows"):
@@ -253,8 +251,8 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
             display_detail_table(df_raw, selected_account, "other")
     st.markdown("---")
 
-    # 5. 세금 항목
-    st.markdown("#### 5. 세금 및 예수금 항목")
+    # 5. 세금 및 법인세
+    st.markdown("#### 5. 세금 및 법인세비용 (비용 항목만)")
     tax_df = make_section_df(raw_pivot, TAX_ACCOUNTS, "소계(세금항목)")
     event_tax = st.dataframe(style_table(tax_df), use_container_width=True, on_select="rerun", selection_mode="single-row", key="tax_tbl")
     if event_tax and event_tax.get("selection", {}).get("rows"):
@@ -262,4 +260,30 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
         selected_account = tax_df.index[selected_idx]
         if "📌" not in selected_account:
             display_detail_table(df_raw, selected_account, "tax")
+    st.markdown("---")
+
+    # 6. 자산 및 부채 정산 항목 (손익 외 항목)
+    st.markdown("#### 6. 자산·부채 정산 항목 (대출금, 예수금, 가지급금 등)")
+    bs_df = make_section_df(raw_pivot, BS_ACCOUNTS, "소계(자산부채정산)")
+    event_bs = st.dataframe(style_table(bs_df), use_container_width=True, on_select="rerun", selection_mode="single-row", key="bs_tbl")
+    if event_bs and event_bs.get("selection", {}).get("rows"):
+        selected_idx = event_bs["selection"]["rows"][0]
+        selected_account = bs_df.index[selected_idx]
+        if "📌" not in selected_account:
+            display_detail_table(df_raw, selected_account, "bs")
+    st.markdown("---")
+
+    # 7. 최종 당기순이익
+    st.markdown("#### 🎯 7. 최종 당기순이익 (영업이익 + 영업외손익 + 세금)")
+    other_sum = raw_pivot.reindex(OTHER_ACCOUNTS).fillna(0).sum()
+    tax_sum = raw_pivot.reindex(TAX_ACCOUNTS).fillna(0).sum()
+    net_profit = operating_profit + other_sum + tax_sum
+    
+    net_summary_df = pd.DataFrame([
+        operating_profit,
+        other_sum,
+        tax_sum,
+        net_profit
+    ], index=["3. 영업이익", "4. 영업외손익 소계", "5. 세금/법인세 소계", "📌 7. 최종 당기순이익"])
+    st.dataframe(style_table(net_summary_df), use_container_width=True)
     st.markdown("---")
