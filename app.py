@@ -72,7 +72,6 @@ MAINGROUP_MAP = {
     "수선비": "수선비", "장비구입": "비품", "출금": "현금"
 }
 
-# 회계 기준 분류
 SALES_ACCOUNTS = ["국고보조금", "용역매출"]
 COST_ACCOUNTS = [
     "급여", "잡급", "퇴직연금", "퇴직연금운용관리", "건강보험", "고용보험", "국민연금", "산재보험", "교육훈련비",
@@ -80,9 +79,9 @@ COST_ACCOUNTS = [
     "소모품비", "사무용품비", "수선비", "지급수수료", "복리후생비", "통신비", "도서인쇄비",
     "업무추진비", "운반비", "비품"
 ]
-OTHER_ACCOUNTS = ["기타영업외수익", "이자수익", "임대료", "이자비용"]  # Pure P&L 항목만
-TAX_ACCOUNTS = ["세금과공과", "법인세비용"]                      # Pure Expense 항목만
-BS_ACCOUNTS = ["단기차입금", "장기차입금", "가수금", "가지급금", "예수금", "퇴직소득세", "임차보증금", "미지급금 정산", "현금"] # 자산/부채 항목
+OTHER_ACCOUNTS = ["기타영업외수익", "이자수익", "임대료", "이자비용"]
+TAX_ACCOUNTS = ["세금과공과", "법인세비용"]
+BS_ACCOUNTS = ["단기차입금", "장기차입금", "가수금", "가지급금", "예수금", "퇴직소득세", "임차보증금", "미지급금 정산", "현금"]
 
 def classify_account(row):
     sub = str(row['subgroup']).strip() if pd.notnull(row['subgroup']) else ""
@@ -177,6 +176,33 @@ def display_detail_table(df_raw, account_name, key_suffix):
 
     st.dataframe(style_detail(combined_view), use_container_width=True)
 
+def detect_anomaly_expenses(raw_pivot):
+    cost_pivot = raw_pivot.reindex(COST_ACCOUNTS).fillna(0).abs()
+    active_months = [m for m in cost_pivot.columns if cost_pivot[m].sum() > 0]
+    if len(active_months) < 2:
+        return []
+    
+    latest_month = active_months[-1]
+    prev_months = active_months[:-1][-3:]
+    
+    anomalies = []
+    for acc in cost_pivot.index:
+        latest_val = cost_pivot.loc[acc, latest_month]
+        avg_prev_val = cost_pivot.loc[acc, prev_months].mean()
+        
+        if avg_prev_val > 0 and latest_val >= avg_prev_val * 2.0 and (latest_val - avg_prev_val) >= 1_000_000:
+            rate = ((latest_val - avg_prev_val) / avg_prev_val) * 100
+            diff = latest_val - avg_prev_val
+            anomalies.append({
+                'account': acc,
+                'month': latest_month,
+                'latest_val': latest_val,
+                'avg_val': avg_prev_val,
+                'rate': rate,
+                'diff': diff
+            })
+    return anomalies
+
 if st.sidebar.button("데이터 불러오기 및 손익계산서 생성"):
     with st.spinner("MS SQL 데이터 수집 및 정밀 분리 중..."):
         df = fetch_account_data(selected_year)
@@ -202,6 +228,23 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
     raw_pivot = st.session_state['raw_pivot']
     df_raw = st.session_state['df_raw']
 
+    # ⚠️ [미분류 항목 존재 여부 체크 및 경고]
+    unclassified_df = df_raw[df_raw['account'] == "⚠️ 미분류"]
+    if not unclassified_df.empty:
+        st.error(f"🚨 **[미분류 항목 경고]** 회계 계정과목으로 분류되지 않은 거래가 총 **{len(unclassified_df)}건** 존재합니다! (맨 아래 8번 섹션 확인 필수)")
+        st.markdown("---")
+
+    # ⚡ [이상 지출 경고]
+    anomalies = detect_anomaly_expenses(raw_pivot)
+    if anomalies:
+        st.error(f"⚡ **[이달의 주요 이상 지출 경고]** 최근 평균 대비 지출이 급증한 항목이 포착되었습니다!")
+        for a in anomalies:
+            st.warning(
+                f"🚨 **[{a['account']}]** ({a['month']}) 지출: **{a['latest_val']:,.0f}원** "
+                f"(직전 평균 대비 **+{a['rate']:.0f}%** 급증 / **+{a['diff']:,.0f}원** 과다 지출)"
+            )
+        st.markdown("---")
+
     st.subheader(f"📌 {selected_year}년 정식 손익계산서 (항목 클릭 시 세부내역 표시)")
 
     # 1. 매출액
@@ -226,7 +269,7 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
             display_detail_table(df_raw, selected_account, "cost")
     st.markdown("---")
 
-    # 3. 영업이익 종합 요약
+    # 3. 영업이익 종합
     st.markdown("#### 🏆 3. 영업이익 종합 (총매출액 - 총영업비용)")
     sales_sum = raw_pivot.reindex(SALES_ACCOUNTS).fillna(0).sum()
     cost_sum = raw_pivot.reindex(COST_ACCOUNTS).fillna(0).sum()
@@ -240,7 +283,7 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
     st.dataframe(style_table(summary_df), use_container_width=True)
     st.markdown("---")
 
-    # 4. 영업외손익 (손익 항목만)
+    # 4. 영업외손익
     st.markdown("#### 4. 영업외손익 (임대료, 이자 등)")
     other_df = make_section_df(raw_pivot, OTHER_ACCOUNTS, "소계(영업외손익)")
     event_other = st.dataframe(style_table(other_df), use_container_width=True, on_select="rerun", selection_mode="single-row", key="other_tbl")
@@ -262,7 +305,7 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
             display_detail_table(df_raw, selected_account, "tax")
     st.markdown("---")
 
-    # 6. 자산 및 부채 정산 항목 (손익 외 항목)
+    # 6. 자산 및 부채 정산 항목
     st.markdown("#### 6. 자산·부채 정산 항목 (대출금, 예수금, 가지급금 등)")
     bs_df = make_section_df(raw_pivot, BS_ACCOUNTS, "소계(자산부채정산)")
     event_bs = st.dataframe(style_table(bs_df), use_container_width=True, on_select="rerun", selection_mode="single-row", key="bs_tbl")
@@ -286,4 +329,21 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
         net_profit
     ], index=["3. 영업이익", "4. 영업외손익 소계", "5. 세금/법인세 소계", "📌 7. 최종 당기순이익"])
     st.dataframe(style_table(net_summary_df), use_container_width=True)
+    st.markdown("---")
+
+    # ⚠️ 8. 미분류 항목 출력 섹션 (확인 필수)
+    st.markdown("#### ⚠️ 8. 미분류 항목 (확인 필수)")
+    if unclassified_df.empty:
+        st.success("✅ 미분류된 거래 내역이 존재하지 않습니다. 모든 데이터가 카테고리에 지정되었습니다!")
+    else:
+        st.warning(f"⚠️ 매핑 테이블에 없는 거래 **{len(unclassified_df)}건**이 존재합니다. 아래 내역을 확인해 주세요.")
+        unclass_view = unclassified_df[['day', 'maingroup', 'subgroup', 'where', 'abstract01', 'deposit', 'withdrawal', 'amount']].sort_values(by='day', ascending=False)
+        st.dataframe(
+            unclass_view.style.format({
+                'deposit': '{:,.0f}',
+                'withdrawal': '{:,.0f}',
+                'amount': '{:,.0f}'
+            }),
+            use_container_width=True
+        )
     st.markdown("---")
