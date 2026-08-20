@@ -40,7 +40,6 @@ year_options = [str(y) for y in range(current_year + 4, 2018, -1)]
 st.sidebar.header("조회 조건 설정")
 selected_year = st.sidebar.selectbox("조회 연도 선택", year_options, index=year_options.index(str(current_year)))
 
-# Subgroup 매핑 사전
 SUBGROUP_MAP = {
     "가수금": "가수금", "과오납": "가수금", "미확인": "가수금", "가지급금": "가지급금",
     "급여": "급여", "잡급": "잡급", "퇴직연금": "퇴직연금", "퇴직연금운용관리": "퇴직연금운용관리",
@@ -118,21 +117,67 @@ def style_table(df):
         return styles
     return df.style.format("{:,.0f}").apply(apply_cell_style, axis=1)
 
-# 클릭한 항목의 세부 내역을 표시하는 함수
-def display_detail_table(df_raw, account_name):
-    filtered_df = df_raw[df_raw['account'] == account_name][
-        ['day', 'maingroup', 'subgroup', 'where', 'abstract01', 'deposit', 'withdrawal', 'amount']
-    ].sort_values(by='day', ascending=False)
+# 세부 내역 및 월별 필터/합계 표시 함수
+def display_detail_table(df_raw, account_name, key_suffix):
+    base_df = df_raw[df_raw['account'] == account_name].copy()
     
-    st.info(f"👉 **[{account_name}]** 항목 클릭됨 - 총 **{len(filtered_df)}건**의 세부 거래내역")
-    st.dataframe(
-        filtered_df.style.format({
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        month_options = ["전체"] + [f"{i}월" for i in range(1, 13)]
+        selected_month = st.selectbox(
+            f"📅 [{account_name}] 조회 월 선택", 
+            month_options, 
+            key=f"month_select_{key_suffix}"
+        )
+    
+    if selected_month != "전체":
+        display_df = base_df[base_df['month'] == selected_month].copy()
+    else:
+        display_df = base_df.copy()
+        
+    display_df = display_df.sort_values(by='day', ascending=False)
+    
+    # 합계 행 계산
+    dep_sum = display_df['deposit'].fillna(0).sum()
+    with_sum = display_df['withdrawal'].fillna(0).sum()
+    amt_sum = display_df['amount'].fillna(0).sum()
+    
+    # 출력용 데이터프레임 구성
+    view_df = display_df[['day', 'maingroup', 'subgroup', 'where', 'abstract01', 'deposit', 'withdrawal', 'amount']].copy()
+    
+    sum_row = pd.DataFrame([{
+        'day': '📌 합계',
+        'maingroup': '-',
+        'subgroup': '-',
+        'where': '-',
+        'abstract01': f'{selected_month} 총계 ({len(view_df)}건)',
+        'deposit': dep_sum,
+        'withdrawal': with_sum,
+        'amount': amt_sum
+    }])
+    
+    combined_view = pd.concat([view_df, sum_row], ignore_index=True)
+    
+    st.info(f"👉 **[{account_name}]** ({selected_month}) 세부 거래내역 - 총 **{len(view_df)}건**")
+    
+    # 합계 행 강조 스타일
+    def style_detail(df):
+        def apply_row_style(row):
+            is_total = str(row['day']) == '📌 합계'
+            css = []
+            for _ in row:
+                if is_total:
+                    css.append("background-color: #E8F0FE; font-weight: bold; font-size: 15px;")
+                else:
+                    css.append("")
+            return css
+        return df.style.format({
             'deposit': '{:,.0f}',
             'withdrawal': '{:,.0f}',
             'amount': '{:,.0f}'
-        }),
-        use_container_width=True
-    )
+        }).apply(apply_row_style, axis=1)
+
+    st.dataframe(style_detail(combined_view), use_container_width=True)
 
 if st.sidebar.button("데이터 불러오기 및 손익계산서 생성"):
     with st.spinner("MS SQL 데이터 수집 및 정밀 분리 중..."):
@@ -169,7 +214,7 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
         selected_idx = event_sales["selection"]["rows"][0]
         selected_account = sales_df.index[selected_idx]
         if "📌" not in selected_account:
-            display_detail_table(df_raw, selected_account)
+            display_detail_table(df_raw, selected_account, "sales")
     st.markdown("---")
 
     # 2. 매출원가 및 영업비용
@@ -180,10 +225,10 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
         selected_idx = event_cost["selection"]["rows"][0]
         selected_account = cost_df.index[selected_idx]
         if "📌" not in selected_account:
-            display_detail_table(df_raw, selected_account)
+            display_detail_table(df_raw, selected_account, "cost")
     st.markdown("---")
 
-    # 3. 영업이익 종합 요약
+    # 3. 영업이익 종합
     st.markdown("#### 🏆 3. 영업이익 종합 (총매출액 - 총영업비용)")
     sales_sum = raw_pivot.reindex(SALES_ACCOUNTS).fillna(0).sum()
     cost_sum = raw_pivot.reindex(COST_ACCOUNTS).fillna(0).sum()
@@ -205,7 +250,7 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
         selected_idx = event_other["selection"]["rows"][0]
         selected_account = other_df.index[selected_idx]
         if "📌" not in selected_account:
-            display_detail_table(df_raw, selected_account)
+            display_detail_table(df_raw, selected_account, "other")
     st.markdown("---")
 
     # 5. 세금 항목
@@ -216,5 +261,5 @@ if 'raw_pivot' in st.session_state and 'df_raw' in st.session_state:
         selected_idx = event_tax["selection"]["rows"][0]
         selected_account = tax_df.index[selected_idx]
         if "📌" not in selected_account:
-            display_detail_table(df_raw, selected_account)
+            display_detail_table(df_raw, selected_account, "tax")
     st.markdown("---")
