@@ -34,7 +34,11 @@ def fetch_account_data(year):
     return df
 
 # UI 기본 설정
-st.set_page_config(page_title="정식 손익계산서", layout="wide")
+st.set_page_config(
+    page_title="정식 손익계산서", 
+    layout="wide", 
+    initial_sidebar_state="expanded"
+)
 st.title("📊 AI 기반 정식 손익계산서 자동화 시스템")
 
 # 연도 선택 셀렉트박스
